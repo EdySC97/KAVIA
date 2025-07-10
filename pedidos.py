@@ -28,7 +28,6 @@ def conectar_db():
 conn = conectar_db()
 
 # 4) Consultas cacheadas
-
 @st.cache_data(ttl=60)
 def get_tables():
     return pd.read_sql("SELECT id, nombre FROM mesas ORDER BY id", conn)
@@ -43,54 +42,29 @@ def get_products():
 
 @st.cache_data(ttl=30)
 def get_open_orders():
-    try:
-        sql = """
-          SELECT 
-            o.id, 
-            o.mesa_id, 
-            o.personas, 
-            m.nombre AS mesa
-          FROM ordenes o
-          JOIN mesas m ON m.id = o.mesa_id
-          WHERE o.estado = 'abierto';
-        """
-        return pd.read_sql(sql, conn)
-    except Exception as e:
-        st.error("Error en get_open_orders:")
-        st.error(str(e))
-        # Mostrar tablas y columnas para depurar
-        tbls = pd.read_sql(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema='public' ORDER BY table_name;",
-            conn
-        )
-        st.write("Tablas en public:", tbls["table_name"].tolist())
-        cols = pd.read_sql(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name='ordenes';",
-            conn
-        )
-        st.write("Columnas en ordenes:", cols["column_name"].tolist())
-        return pd.DataFrame()
+    return pd.read_sql(
+        "SELECT o.id, o.mesa_id, o.personas, m.nombre AS mesa "
+        "FROM ordenes o JOIN mesas m ON m.id=o.mesa_id "
+        "WHERE o.estado='abierto';",
+        conn
+    )
 
 @st.cache_data(ttl=30)
 def get_order_items(orden_id):
     sql = """
       SELECT 
-        p.nombre                    AS producto,
+        p.nombre             AS producto,
         oi.cantidad,
         oi.precio_unitario,
         oi.subtotal
       FROM orden_items oi
-      JOIN productos p 
-        ON p.id = oi.producto_id
+      JOIN productos p ON p.id = oi.producto_id
       WHERE oi.orden_id = %s
       ORDER BY p.nombre;
     """
     return pd.read_sql(sql, conn, params=(orden_id,))
 
 # 5) Lógica de negocio
-
 def get_or_create_order(mesa_id, personas):
     df = pd.read_sql(
         "SELECT id, personas FROM ordenes "
@@ -98,7 +72,7 @@ def get_or_create_order(mesa_id, personas):
         conn, params=(mesa_id,)
     )
     if not df.empty:
-        oid, existing = df.loc[0, ["id", "personas"]]
+        oid, existing = df.loc[0, ["id","personas"]]
         if existing != personas:
             cur = conn.cursor()
             cur.execute(
@@ -107,7 +81,6 @@ def get_or_create_order(mesa_id, personas):
             )
             conn.commit()
         return oid
-
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO ordenes(mesa_id,personas,estado) "
@@ -119,7 +92,7 @@ def get_or_create_order(mesa_id, personas):
     return oid
 
 def add_item(orden_id, producto_id, cantidad, precio):
-    # subtotal es GENERATED ALWAYS, no se inserta
+    # No insertar subtotal, es GENERATED ALWAYS
     cur = conn.cursor()
     cur.execute("""
       INSERT INTO orden_items
@@ -153,8 +126,7 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
     pdf.cell(0,6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
 
-# 6) Sidebar: carrito de mesas abiertas
-
+# 6) Sidebar: carrito
 st.sidebar.header("🛒 Mesas Abiertas")
 open_orders = get_open_orders()
 if open_orders.empty:
@@ -169,49 +141,40 @@ else:
                 st.table(df_it[["producto","cantidad","subtotal"]])
                 st.write("Total: $", df_it["subtotal"].sum())
 
-# 7) Área principal: tomar pedido
-
+# 7) Área principal
 mesas_df = get_tables()
 if mesas_df.empty:
     st.error("No hay mesas definidas.")
     st.stop()
 
 mesa_sel = st.selectbox("Elige mesa", mesas_df["nombre"])
-mesa_id  = mesas_df.loc[mesas_df["nombre"] == mesa_sel, "id"].iloc[0]
+mesa_id  = mesas_df.loc[mesas_df["nombre"]==mesa_sel, "id"].iloc[0]
 personas = st.number_input("Cantidad de personas", min_value=1, max_value=20, value=1)
 
 orden_id = get_or_create_order(mesa_id, personas)
 st.markdown(f"**Orden activa:** {orden_id}")
 
-# 7.1) Selección por categoría (incluye Bebidas)
-
+# Productos y bebidas por categoría
 productos_df = get_products()
 categorias  = productos_df["categoria"].unique().tolist()
 categoria   = st.selectbox("Categoría", categorias)
 filtro_df   = productos_df[productos_df["categoria"] == categoria]
 
 sel_prod = st.selectbox("Producto", filtro_df["nombre"])
-prod_row = filtro_df.loc[filtro_df["nombre"] == sel_prod].iloc[0]
+prod_row = filtro_df[filtro_df["nombre"] == sel_prod].iloc[0]
 cant     = st.number_input("Cantidad", min_value=1, value=1, key="cant")
 
 if st.button("➕ Añadir al pedido"):
-    add_item(orden_id,
-             int(prod_row.id),
-             int(cant),
-             float(prod_row.precio_unitario))
+    add_item(orden_id, int(prod_row.id), int(cant), float(prod_row.precio_unitario))
     st.success(f"{cant} x {sel_prod} agregado.")
 
-# 7.2) Mostrar detalle, total, finalizar e imprimir
-
+# Detalle, total, finalizar e imprimir
 st.subheader("Detalle de la orden")
 items = get_order_items(orden_id)
 if items.empty:
     st.info("No hay productos agregados aún.")
 else:
-    st.dataframe(
-        items[["producto","cantidad","precio_unitario","subtotal"]],
-        use_container_width=True
-    )
+    st.dataframe(items[["producto","cantidad","precio_unitario","subtotal"]], use_container_width=True)
     total = items["subtotal"].sum()
     st.metric("Total a pagar", f"$ {total:.2f}")
 
@@ -222,12 +185,7 @@ else:
             st.success("Mesa finalizada. ¡Gracias!")
     with col2:
         if st.button("🖨️ Imprimir ticket"):
-            pdf_bytes = generar_ticket_pdf(
-                mesa_sel, personas, orden_id, items, total
-            )
-            st.download_button(
-                "⬇️ Descargar PDF",
-                data=pdf_bytes,
-                file_name=f"ticket_{orden_id}.pdf",
-                mime="application/pdf"
-            )
+            pdf_bytes = generar_ticket_pdf(mesa_sel, personas, orden_id, items, total)
+            st.download_button("⬇️ Descargar PDF", data=pdf_bytes,
+                               file_name=f"ticket_{orden_id}.pdf",
+                               mime="application/pdf")
