@@ -48,23 +48,29 @@ def get_products():
         conn
     )
 
-@st.cache_data(ttl=30)
-@st.cache_data(ttl=30)
 def get_order_items(orden_id):
     sql = """
     SELECT
       p.nombre                 AS producto,
       oi.cantidad,
       oi.precio_unitario,
-      oi.cantidad * oi.precio_unitario
-        AS subtotal
+      (oi.cantidad * oi.precio_unitario) AS subtotal
     FROM orden_items oi
     JOIN productos p
       ON p.id = oi.producto_id
     WHERE oi.orden_id = %s;
     """
-    return pd.read_sql(sql, conn, params=(orden_id,))
-
+    try:
+        # Quita el cache para depurar
+        df = pd.read_sql(sql, conn, params=(orden_id,))
+        return df
+    except Exception as e:
+        # Muestra el mensaje completo de error
+        st.error("Error en get_order_items:")
+        st.error(str(e))
+        # Opcional: también lo imprimes en consola
+        import traceback; print(traceback.format_exc())
+        return pd.DataFrame()
 # 4. Lógica de órdenes
 def get_or_create_order(mesa_id):
     df = pd.read_sql(
