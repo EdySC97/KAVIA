@@ -13,7 +13,7 @@ os.environ["PGCLIENTENCODING"] = "latin1"
 st.set_page_config(layout="wide")
 st.title("📋 Captura de Pedido")
 
-# 2) Credenciales
+# 2) Credenciales y engine SQLAlchemy
 cfg = st.secrets["postgres"]
 engine = create_engine(
     f"postgresql+psycopg2://{cfg['user']}:{cfg['password']}@{cfg['host']}:{cfg['port']}/{cfg['database']}"
@@ -54,7 +54,7 @@ def get_open_orders():
                 FROM ordenes o
                 JOIN mesas m ON m.id = o.mesa_id
                 WHERE o.estado = 'abierto'
-                ORDER BY o.id
+                ORDER BY o.creado_at DESC
             """, conn)
     except:
         st.error("❌ Error al consultar órdenes abiertas")
@@ -82,7 +82,8 @@ def get_order_items(orden_id):
         st.error(traceback.format_exc())
         return pd.DataFrame()
 
-# 4) Lógica principal
+# 4) Funciones de negocio
+
 def get_or_create_order(mesa_id, personas):
     try:
         with engine.begin() as conn:
@@ -130,6 +131,18 @@ def add_item(orden_id, producto_id, cantidad, precio):
         st.error("❌ Error al agregar producto")
         st.error(traceback.format_exc())
 
+def update_order_personas(orden_id, personas):
+    try:
+        orden_uuid = uuid.UUID(str(orden_id))
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE ordenes SET personas = :personas WHERE id = :id"),
+                {"personas": personas, "id": orden_uuid}
+            )
+    except:
+        st.error("❌ Error al actualizar personas")
+        st.error(traceback.format_exc())
+
 def finalize_order(orden_id):
     try:
         orden_uuid = uuid.UUID(str(orden_id))
@@ -142,15 +155,11 @@ def finalize_order(orden_id):
         st.error("❌ Error al finalizar orden")
         st.error(traceback.format_exc())
 
-
-
-
 def generar_ticket_pdf(mesa, personas, orden_id, items, total):
-    pdf = FPDF(orientation='P', unit='mm', format=(80, 150))  # Tamaño ticket: 80x150 mm
-    pdf.set_margins(5, 5, 5)  # Márgenes: 5 mm izquierdo, arriba y derecho
+    pdf = FPDF(format="P", unit="mm", margin=10)
     pdf.add_page()
     pdf.set_font("Courier", size=11)
-    pdf.cell(0, 6, "====== BAR KAVIA ======", ln=True, align="C")
+    pdf.cell(0, 6, "====== BAR XYZ ======", ln=True, align="C")
     pdf.cell(0, 6, f"Mesa: {mesa}   Personas: {personas}", ln=True)
     pdf.cell(0, 6, f"Orden: {str(orden_id)[:8]}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
     pdf.cell(0, 6, "-"*40, ln=True)
@@ -160,8 +169,7 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
     pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
 
-
-# 5) Sidebar de mesas abiertas
+# 5) Sidebar con mesas abiertas
 st.sidebar.header("🛒 Mesas Abiertas")
 open_orders = get_open_orders()
 if open_orders.empty:
@@ -177,6 +185,7 @@ else:
                 st.write("Total: $", df_items["subtotal"].sum())
 
 # 6) Área principal
+
 mesas_df = get_tables()
 if mesas_df.empty:
     st.error("❌ No hay mesas definidas.")
@@ -184,12 +193,33 @@ if mesas_df.empty:
 
 mesa_sel = st.selectbox("🍽️ Elige mesa", mesas_df["nombre"])
 mesa_id = int(mesas_df[mesas_df["nombre"] == mesa_sel]["id"].iloc[0])
-personas = st.number_input("👥 Cantidad de personas", min_value=1, max_value=20, value=1)
 
-orden_id = get_or_create_order(mesa_id, personas)
-if not orden_id:
-    st.stop()
-st.markdown(f"**🧾 Orden activa:** `{orden_id}`")
+# **Nuevo:** Selección de orden abierta para modificar o crear nueva
+open_orders = get_open_orders()
+# Creamos opciones para el selectbox con id corto + mesa + personas
+order_options = ["Nueva orden"]
+order_map = {}  # id_corto -> UUID completo
+for row in open_orders.itertuples():
+    short_id = str(row.id)[:8]
+    label = f"{short_id} - Mesa {row.mesa} ({row.personas} pers)"
+    order_options.append(label)
+    order_map[label] = str(row.id)
+
+selected_order_label = st.selectbox("🔄 Selecciona orden abierta para modificar o crea nueva", order_options)
+
+if selected_order_label == "Nueva orden":
+    personas = st.number_input("👥 Cantidad de personas", min_value=1, max_value=20, value=1)
+    orden_id = get_or_create_order(mesa_id, personas)
+else:
+    orden_id = order_map[selected_order_label]
+    # Cargar personas actuales de la orden para permitir edición
+    personas = open_orders.loc[open_orders["id"] == uuid.UUID(orden_id), "personas"].values[0]
+    nuevas_personas = st.number_input("👥 Cantidad de personas", min_value=1, max_value=20, value=personas)
+    if nuevas_personas != personas:
+        update_order_personas(orden_id, nuevas_personas)
+        personas = nuevas_personas
+
+st.markdown(f"**🧾 Orden activa:** `{str(orden_id)[:8]}`")
 
 # 7) Selección de producto
 productos_df = get_products()
@@ -208,10 +238,9 @@ if st.button("➕ Añadir al pedido"):
         int(cant),
         float(prod_row["precio_unitario"])
     )
-    get_order_items.clear()  # <---- Limpiar caché para que se refresque el detalle
     st.success(f"{cant} x {sel_prod} agregado.")
 
-# 8) Mostrar orden
+# 8) Mostrar detalle de la orden
 st.subheader("🧾 Detalle de la orden")
 items = get_order_items(orden_id)
 if items.empty:
@@ -232,6 +261,6 @@ else:
             st.download_button(
                 "⬇️ Descargar PDF",
                 data=pdf_bytes,
-                file_name=f"ticket_{orden_id}.pdf",
+                file_name=f"ticket_{str(orden_id)[:8]}.pdf",
                 mime="application/pdf"
             )
