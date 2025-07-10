@@ -1,16 +1,17 @@
 import os
+import traceback
 import streamlit as st
 import psycopg2
 import pandas as pd
 from datetime import datetime
 from fpdf import FPDF
 
-# 1) Forzar encoding y layout
+# 1) Configuración de entorno y layout
 os.environ["PGCLIENTENCODING"] = "latin1"
 st.set_page_config(layout="wide")
 st.title("📋 Captura de Pedido")
 
-# 2) Cargar credenciales
+# 2) Leer credenciales
 cfg      = st.secrets["postgres"]
 host     = cfg["host"]
 port     = cfg["port"]
@@ -18,7 +19,7 @@ database = cfg["database"]
 user     = cfg["user"]
 password = cfg["password"]
 
-# 3) Conectar a Postgres
+# 3) Conexión compartida a la base de datos
 @st.cache_resource
 def conectar_db():
     return psycopg2.connect(
@@ -42,37 +43,55 @@ def get_products():
 
 @st.cache_data(ttl=30)
 def get_open_orders():
-    sql = """
-      SELECT o.id, o.mesa_id, o.personas, m.nombre AS mesa
-      FROM ordenes o
-      JOIN mesas m ON m.id = o.mesa_id
-      WHERE o.estado = 'abierto'
-      ORDER BY o.id;
-    """
-    return pd.read_sql(sql, conn)
+    return pd.read_sql(
+        """
+        SELECT o.id, o.mesa_id, o.personas, m.nombre AS mesa
+        FROM ordenes o
+        JOIN mesas m ON m.id = o.mesa_id
+        WHERE o.estado = 'abierto'
+        ORDER BY o.id;
+        """,
+        conn
+    )
 
 @st.cache_data(ttl=30)
 def get_order_items(orden_id):
-    sql = """
-      SELECT
-        p.nombre            AS producto,
-        oi.cantidad,
-        oi.precio_unitario,
-        oi.subtotal
-      FROM orden_items oi
-      JOIN productos p ON p.id = oi.producto_id
-      WHERE oi.orden_id = %s
-      ORDER BY p.nombre;
-    """
-    return pd.read_sql(sql, conn, params=(orden_id,))
-
-# 5) Lógica de negocio
-def get_or_create_order(mesa_id, personas):
-    df = pd.read_sql(
-        "SELECT id, personas FROM ordenes "
-        "WHERE mesa_id=%s AND estado='abierto';",
-        conn, params=(mesa_id,)
+    return pd.read_sql(
+        """
+        SELECT 
+          p.nombre            AS producto,
+          oi.cantidad,
+          oi.precio_unitario,
+          oi.subtotal
+        FROM orden_items oi
+        JOIN productos p 
+          ON p.id = oi.producto_id
+        WHERE oi.orden_id = %s
+        ORDER BY p.nombre;
+        """,
+        conn, params=(orden_id,)
     )
+
+# 5) Lógica de negocio con depuración en get_or_create_order
+def get_or_create_order(mesa_id, personas):
+    try:
+        df = pd.read_sql(
+            "SELECT id, personas FROM ordenes "
+            "WHERE mesa_id=%s AND estado='abierto';",
+            conn, params=(mesa_id,)
+        )
+    except Exception as e:
+        st.error("Error en get_or_create_order:")
+        st.error(str(e))
+        st.error(traceback.format_exc())
+        cols = pd.read_sql(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='ordenes';",
+            conn
+        )
+        st.write("Columnas en ordenes:", cols["column_name"].tolist())
+        st.stop()
+
     if not df.empty:
         oid, existing = df.loc[0, ["id","personas"]]
         if existing != personas:
@@ -95,7 +114,7 @@ def get_or_create_order(mesa_id, personas):
     return oid
 
 def add_item(orden_id, producto_id, cantidad, precio):
-    # No insertamos subtotal, es GENERATED ALWAYS
+    # subtotal es GENERATED ALWAYS; no se inserta
     cur = conn.cursor()
     cur.execute("""
       INSERT INTO orden_items
@@ -109,7 +128,7 @@ def finalize_order(orden_id):
     cur = conn.cursor()
     cur.execute("""
       UPDATE ordenes
-      SET estado='pagado', cerrado_at=%s
+        SET estado='pagado', cerrado_at=%s
       WHERE id=%s;
     """, (now, orden_id))
     conn.commit()
@@ -156,14 +175,14 @@ personas = st.number_input("Cantidad de personas", min_value=1, max_value=20, va
 orden_id = get_or_create_order(mesa_id, personas)
 st.markdown(f"**Orden activa:** {orden_id}")
 
-# 7.1) Filtrar por categoría (Comida/Bebidas)
+# 7.1) Filtrar por categoría (incluye Bebidas)
 productos_df = get_products()
 categorias  = productos_df["categoria"].unique().tolist()
 categoria   = st.selectbox("Categoría", categorias)
 filtro_df   = productos_df[productos_df["categoria"] == categoria]
 
 sel_prod = st.selectbox("Producto", filtro_df["nombre"])
-prod_row = filtro_df.loc[filtro_df["nombre"] == sel_prod].iloc[0]
+prod_row = filtro_df[filtro_df["nombre"] == sel_prod].iloc[0]
 cant     = st.number_input("Cantidad", min_value=1, value=1, key="cant")
 
 if st.button("➕ Añadir al pedido"):
@@ -175,7 +194,7 @@ if st.button("➕ Añadir al pedido"):
     )
     st.success(f"{cant} x {sel_prod} agregado.")
 
-# 7.2) Mostrar detalle, total, finalizar e imprimir
+# 7.2) Detalle, total, finalizar e imprimir
 st.subheader("Detalle de la orden")
 items = get_order_items(orden_id)
 if items.empty:
