@@ -1,36 +1,35 @@
 import os
 import traceback
 import streamlit as st
-import psycopg2
 import pandas as pd
 from datetime import datetime
+from sqlalchemy import create_engine
 from fpdf import FPDF
 
-# 1) Configuración general
+# Configuración general
 os.environ["PGCLIENTENCODING"] = "latin1"
 st.set_page_config(layout="wide")
 st.title("📋 Captura de Pedido")
 
-# 2) Leer credenciales
+# Leer credenciales
 cfg = st.secrets["postgres"]
 host, port, database = cfg["host"], cfg["port"], cfg["database"]
 user, password = cfg["user"], cfg["password"]
 
-# 3) Conexión a la base de datos
+# Crear engine SQLAlchemy
+DB_URL = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
+
 @st.cache_resource
 def conectar_db():
-    return psycopg2.connect(
-        host=host, port=port,
-        dbname=database, user=user, password=password
-    )
-conn = conectar_db()
+    return create_engine(DB_URL)
 
-# 4) Consultas cacheadas
+engine = conectar_db()
+
+# Funciones cacheadas
 @st.cache_data(ttl=60)
 def get_tables():
     try:
-        conn.rollback()
-        return pd.read_sql("SELECT id, nombre FROM mesas ORDER BY id", conn)
+        return pd.read_sql("SELECT id, nombre FROM mesas ORDER BY id", engine)
     except Exception:
         st.error("Error al obtener mesas")
         st.error(traceback.format_exc())
@@ -39,13 +38,12 @@ def get_tables():
 @st.cache_data(ttl=60)
 def get_products():
     try:
-        conn.rollback()
         return pd.read_sql("""
             SELECT id, nombre, precio_unitario, categoria 
             FROM productos 
             WHERE precio_unitario IS NOT NULL 
             ORDER BY categoria, nombre
-        """, conn)
+        """, engine)
     except Exception:
         st.error("Error al obtener productos")
         st.error(traceback.format_exc())
@@ -54,14 +52,13 @@ def get_products():
 @st.cache_data(ttl=30)
 def get_open_orders():
     try:
-        conn.rollback()
         return pd.read_sql("""
             SELECT o.id, o.mesa_id, o.personas, m.nombre AS mesa
             FROM ordenes o
             JOIN mesas m ON m.id = o.mesa_id
             WHERE o.estado = 'abierto'
             ORDER BY o.id;
-        """, conn)
+        """, engine)
     except Exception:
         st.error("Error al consultar mesas abiertas")
         st.error(traceback.format_exc())
@@ -70,7 +67,6 @@ def get_open_orders():
 @st.cache_data(ttl=30)
 def get_order_items(orden_id):
     try:
-        conn.rollback()
         return pd.read_sql("""
             SELECT 
                 p.nombre AS producto,
@@ -81,77 +77,60 @@ def get_order_items(orden_id):
             JOIN productos p ON p.id = oi.producto_id
             WHERE oi.orden_id = %s
             ORDER BY p.nombre;
-        """, conn, params=(orden_id,))
+        """, engine, params=(orden_id,))
     except Exception:
         st.error("Error al consultar items de la orden")
         st.error(traceback.format_exc())
         return pd.DataFrame()
 
-# 5) Lógica de negocio
+# Funciones de negocio
 def get_or_create_order(mesa_id, personas):
     try:
-        conn.rollback()
-        df = pd.read_sql("""
-            SELECT id, personas 
-            FROM ordenes 
-            WHERE mesa_id = %s AND estado = 'abierto';
-        """, conn, params=(mesa_id,))
-    except Exception:
-        st.error("Error al obtener orden activa")
-        st.error(traceback.format_exc())
-        return None
-
-    try:
-        if not df.empty:
-            oid, existing = df.loc[0, ["id", "personas"]]
-            if existing != personas:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE ordenes SET personas = %s WHERE id = %s;", (personas, oid))
-                conn.commit()
-            return oid
-
-        with conn.cursor() as cur:
-            cur.execute("""
+        with engine.connect() as conn:
+            df = pd.read_sql("""
+                SELECT id, personas 
+                FROM ordenes 
+                WHERE mesa_id = %s AND estado = 'abierto';
+            """, conn, params=(mesa_id,))
+            if not df.empty:
+                oid, existing = df.loc[0, ["id", "personas"]]
+                if existing != personas:
+                    conn.execute("UPDATE ordenes SET personas = %s WHERE id = %s;", (personas, oid))
+                    conn.commit()
+                return oid
+            result = conn.execute("""
                 INSERT INTO ordenes (mesa_id, personas, estado) 
                 VALUES (%s, %s, 'abierto') RETURNING id;
             """, (mesa_id, personas))
-            oid = cur.fetchone()[0]
-        conn.commit()
-        return oid
+            oid = result.fetchone()[0]
+            conn.commit()
+            return oid
     except Exception:
-        conn.rollback()
-        st.error("Error al crear nueva orden")
+        st.error("Error al crear u obtener orden")
         st.error(traceback.format_exc())
         return None
 
 def add_item(orden_id, producto_id, cantidad, precio):
     try:
-        if None in (orden_id, producto_id, cantidad, precio):
-            raise ValueError("Uno de los valores del producto es None.")
-
-        with conn.cursor() as cur:
-            cur.execute("""
+        with engine.begin() as conn:
+            conn.execute("""
                 INSERT INTO orden_items (orden_id, producto_id, cantidad, precio_unitario)
                 VALUES (%s, %s, %s, %s);
             """, (orden_id, producto_id, cantidad, precio))
-        conn.commit()
     except Exception:
-        conn.rollback()
         st.error("Error al agregar producto")
         st.error(traceback.format_exc())
 
 def finalize_order(orden_id):
     try:
         now = datetime.now()
-        with conn.cursor() as cur:
-            cur.execute("""
+        with engine.begin() as conn:
+            conn.execute("""
                 UPDATE ordenes
                 SET estado = 'pagado', cerrado_at = %s
                 WHERE id = %s;
             """, (now, orden_id))
-        conn.commit()
     except Exception:
-        conn.rollback()
         st.error("Error al finalizar orden")
         st.error(traceback.format_exc())
 
@@ -169,7 +148,7 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
     pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
 
-# 6) Sidebar
+# Sidebar: mesas abiertas
 st.sidebar.header("🛒 Mesas Abiertas")
 open_orders = get_open_orders()
 if open_orders.empty:
@@ -184,7 +163,7 @@ else:
                 st.table(df_it[["producto", "cantidad", "subtotal"]])
                 st.write("Total: $", df_it["subtotal"].sum())
 
-# 7) Captura de pedido
+# Área principal
 mesas_df = get_tables()
 if mesas_df.empty:
     st.error("No hay mesas definidas.")
@@ -196,47 +175,28 @@ personas = st.number_input("Cantidad de personas", min_value=1, max_value=20, va
 
 orden_id = get_or_create_order(mesa_id, personas)
 if orden_id is None:
-    st.error("No se pudo obtener o crear una orden. Verifica la conexión o base de datos.")
     st.stop()
 
 st.markdown(f"**Orden activa:** {orden_id}")
 
 productos_df = get_products()
 categorias = productos_df["categoria"].dropna().unique().tolist()
-
-if not categorias:
-    st.warning("No hay categorías registradas en productos.")
-    st.stop()
-
 categoria = st.selectbox("Categoría", categorias)
 filtro_df = productos_df[productos_df["categoria"] == categoria]
-
-if filtro_df.empty:
-    st.warning("No hay productos en esta categoría.")
-    st.stop()
-
 sel_prod = st.selectbox("Producto", filtro_df["nombre"])
-
-if sel_prod not in filtro_df["nombre"].values:
-    st.warning("Producto no válido.")
-    st.stop()
-
 prod_row = filtro_df[filtro_df["nombre"] == sel_prod].iloc[0]
 cant = st.number_input("Cantidad", min_value=1, value=1, key="cant")
 
 if st.button("➕ Añadir al pedido"):
-    try:
-        add_item(
-            orden_id,
-            int(prod_row["id"]),
-            int(cant),
-            float(prod_row["precio_unitario"])
-        )
-        st.success(f"{cant} x {sel_prod} agregado.")
-    except Exception as e:
-        st.error("No se pudo añadir el producto.")
-        st.error(str(e))
+    add_item(
+        int(orden_id),
+        int(prod_row["id"]),
+        int(cant),
+        float(prod_row["precio_unitario"])
+    )
+    st.success(f"{cant} x {sel_prod} agregado.")
 
+# Mostrar detalle
 st.subheader("Detalle de la orden")
 items = get_order_items(orden_id)
 if items.empty:
