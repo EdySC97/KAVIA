@@ -5,7 +5,6 @@ import pandas as pd
 from datetime import datetime
 from fpdf import FPDF
 
-# Forzar encoding latino
 os.environ["PGCLIENTENCODING"] = "latin1"
 
 st.title("📋 Captura de Pedido")
@@ -18,8 +17,8 @@ database = cfg["database"]
 user     = cfg["user"]
 password = cfg["password"]
 
-# Función de conexión
-@st.cache(allow_output_mutation=True)
+# 1. Conexión como recurso compartido
+@st.cache_resource
 def conectar_db():
     try:
         return psycopg2.connect(
@@ -35,27 +34,45 @@ def conectar_db():
 
 conn = conectar_db()
 
-# Carga de datos
-@st.cache(ttl=60)
+# 2. Funciones de datos cacheados
+@st.cache_data(ttl=60)
 def get_tables():
     return pd.read_sql("SELECT id, nombre FROM mesas ORDER BY id", conn)
 
-@st.cache(ttl=60)
+@st.cache_data(ttl=60)
 def get_products():
     return pd.read_sql(
-        "SELECT id, nombre, precio_unitario FROM productos ORDER BY categoria, nombre",
+        "SELECT id, nombre, precio_unitario "
+        "FROM productos ORDER BY categoria, nombre",
         conn
     )
 
+@st.cache_data(ttl=30)
+def get_order_items(orden_id):
+    sql = """
+      SELECT p.nombre    AS producto,
+             oi.cantidad,
+             oi.precio_unitario,
+             oi.subtotal
+      FROM orden_items oi
+      JOIN productos p ON p.id = oi.producto_id
+      WHERE oi.orden_id = %s;
+    """
+    return pd.read_sql(sql, conn, params=(orden_id,))
+
+# 3. Lógica de órdenes
 def get_or_create_order(mesa_id):
-    sql = "SELECT id FROM ordenes WHERE mesa_id=%s AND estado='abierto' LIMIT 1"
-    df  = pd.read_sql(sql, conn, params=(mesa_id,))
+    df = pd.read_sql(
+        "SELECT id FROM ordenes "
+        "WHERE mesa_id=%s AND estado='abierto' LIMIT 1",
+        conn, params=(mesa_id,)
+    )
     if not df.empty:
         return df.loc[0, "id"]
-
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO ordenes (mesa_id, estado) VALUES (%s,'abierto') RETURNING id;",
+        "INSERT INTO ordenes (mesa_id, estado) "
+        "VALUES (%s,'abierto') RETURNING id;",
         (mesa_id,)
     )
     orden_id = cur.fetchone()[0]
@@ -65,23 +82,11 @@ def get_or_create_order(mesa_id):
 def add_item(orden_id, producto_id, cantidad, precio):
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO orden_items (orden_id,producto_id,cantidad,precio_unitario)
+        INSERT INTO orden_items 
+        (orden_id, producto_id, cantidad, precio_unitario)
         VALUES (%s,%s,%s,%s);
     """, (orden_id, producto_id, cantidad, precio))
     conn.commit()
-
-@st.cache(ttl=30)
-def get_order_items(orden_id):
-    sql = """
-    SELECT p.nombre   AS producto,
-           oi.cantidad,
-           oi.precio_unitario,
-           oi.subtotal
-    FROM orden_items oi
-    JOIN productos p ON p.id=oi.producto_id
-    WHERE oi.orden_id=%s;
-    """
-    return pd.read_sql(sql, conn, params=(orden_id,))
 
 def finalize_order(orden_id):
     ahora = datetime.now()
@@ -111,26 +116,20 @@ def generar_ticket_pdf(mesa, orden_id, items_df, total):
     buffer = pdf.output(dest="S").encode('latin1')
     return buffer
 
-# --- UI de la app ---
-mesas_df = get_tables()
-mesa_sel = st.selectbox("Elige mesa", mesas_df["nombre"])
-mesa_id  = mesas_df[mesas_df["nombre"] == mesa_sel]["id"].iloc[0]
-
-orden_id = get_or_create_order(mesa_id)
+# --- Interfaz de usuario ---
+mesas_df    = get_tables()
+mesa_sel    = st.selectbox("Elige mesa", mesas_df["nombre"])
+mesa_id     = mesas_df[mesas_df["nombre"] == mesa_sel]["id"].iloc[0]
+orden_id    = get_or_create_order(mesa_id)
 st.markdown(f"**Orden activa:** `{orden_id}`")
 
 productos_df = get_products()
-prod_sel = st.selectbox("Producto", productos_df["nombre"])
-prod_row = productos_df[productos_df["nombre"] == prod_sel].iloc[0]
-cant     = st.number_input("Cantidad", min_value=1, step=1, value=1)
+prod_sel     = st.selectbox("Producto", productos_df["nombre"])
+prod_row     = productos_df[productos_df["nombre"] == prod_sel].iloc[0]
+cant         = st.number_input("Cantidad", min_value=1, step=1, value=1)
 
 if st.button("➕ Añadir al pedido"):
-    add_item(
-        orden_id,
-        int(prod_row["id"]),
-        int(cant),
-        float(prod_row["precio_unitario"])
-    )
+    add_item(orden_id, int(prod_row["id"]), int(cant), float(prod_row["precio_unitario"]))
     st.success(f"{cant} x {prod_sel} agregado.")
 
 st.subheader("Detalle de la orden")
