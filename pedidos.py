@@ -7,7 +7,6 @@ import streamlit as st
 import pandas as pd
 from fpdf import FPDF
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
 
 # 1) Configuración
 os.environ["PGCLIENTENCODING"] = "latin1"
@@ -204,6 +203,7 @@ if st.button("➕ Añadir al pedido"):
         int(cant),
         float(prod_row["precio_unitario"])
     )
+    get_order_items.clear()  # <---- Limpiar caché para que se refresque el detalle
     st.success(f"{cant} x {sel_prod} agregado.")
 
 # 8) Mostrar orden
