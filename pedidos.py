@@ -142,21 +142,41 @@ def finalize_order(orden_id):
         st.error("❌ Error al finalizar orden")
         st.error(traceback.format_exc())
 
-def generar_ticket_pdf(mesa, personas, orden_id, items, total):
-    pdf = FPDF(orientation='P', unit='mm', format=(58, 297))
-    pdf.set_margins(left=5, top=5, right=5)
-    pdf.add_page()
-    pdf.set_font("Arial", size=8)  # letra más pequeña para ticket
-    pdf.cell(0, 6, "====== BAR KAVIA ======", ln=True, align="C")
-    pdf.cell(0, 6, f"Mesa: {mesa}   Personas: {personas}", ln=True)
-    pdf.cell(0, 6, f"Orden: {str(orden_id)[:8]}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
-    pdf.cell(0, 6, "-"*40, ln=True)
-    for r in items.itertuples():
-        pdf.cell(0, 6, f"{r.cantidad:>2} x {r.producto:<20} $ {r.subtotal:>6.2f}", ln=True)
-    pdf.cell(0, 6, "-"*40, ln=True)
-    pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
-    return pdf.output(dest="S").encode("latin1")
 
+from datetime import datetime
+
+def generar_ticket_pdf(mesa, personas, orden_id, items, total):
+    # Tamaño de ticket: 58 mm de ancho x 297 mm de alto (puede ser más corto, pero 297 mm es estándar máximo)
+    pdf = FPDF(orientation="P", unit="mm", format=(58, 297))
+    pdf.add_page()
+
+    # Fuente más pequeña para que quepa todo
+    pdf.set_font("Courier", size=7)
+
+    # Encabezado
+    pdf.cell(0, 5, "====== BAR KAVIA ======", ln=True, align="C")
+    pdf.cell(0, 5, f"Mesa: {mesa}   Pers: {personas}", ln=True)
+    pdf.cell(0, 5, f"Orden: {str(orden_id)[:8]}", ln=True)
+    pdf.cell(0, 5, f"Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
+    pdf.cell(0, 5, "-" * 38, ln=True)
+
+    # Detalle de productos
+    for r in items.itertuples():
+        nombre = str(r.producto)[:22]  # Limita el largo del nombre para que no se corte
+        linea = f"{r.cantidad} x {nombre}  ${r.subtotal:.2f}"
+        pdf.multi_cell(0, 5, linea, align="L")
+
+    pdf.cell(0, 5, "-" * 38, ln=True)
+    pdf.set_font("Courier", size=8, style="B")
+    pdf.cell(0, 6, f"TOTAL: ${total:.2f}", ln=True, align="R")
+    pdf.ln(5)
+
+    # Mensaje final
+    pdf.set_font("Courier", size=6)
+    pdf.cell(0, 5, "Gracias por su visita.", ln=True, align="C")
+    pdf.cell(0, 5, "Ticket generado por Bar Kavia", ln=True, align="C")
+
+    return pdf.output(dest="S").encode("latin1")
 
 
 
