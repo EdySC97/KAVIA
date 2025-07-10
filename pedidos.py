@@ -116,10 +116,11 @@ def add_item(orden_id, producto_id, cantidad, precio):
             conn.execute("""
                 INSERT INTO orden_items (orden_id, producto_id, cantidad, precio_unitario)
                 VALUES (%s, %s, %s, %s);
-            """, (orden_id, producto_id, cantidad, precio))
+            """, [(orden_id, producto_id, cantidad, precio)])  # 👈 CORREGIDO
     except Exception:
         st.error("Error al agregar producto")
         st.error(traceback.format_exc())
+
 
 def finalize_order(orden_id):
     try:
