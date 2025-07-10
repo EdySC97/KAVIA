@@ -5,11 +5,12 @@ import pandas as pd
 from datetime import datetime
 from fpdf import FPDF
 
+# Forzar encoding latino (para tildes y eñes)
 os.environ["PGCLIENTENCODING"] = "latin1"
 
 st.title("📋 Captura de Pedido")
 
-# Leer credenciales de .streamlit/secrets.toml
+# 1. Leer credenciales de .streamlit/secrets.toml
 cfg = st.secrets["postgres"]
 host     = cfg["host"]
 port     = cfg["port"]
@@ -17,7 +18,7 @@ database = cfg["database"]
 user     = cfg["user"]
 password = cfg["password"]
 
-# 1. Conexión como recurso compartido
+# 2. Conexión a la base de datos como recurso compartido
 @st.cache_resource
 def conectar_db():
     try:
@@ -34,7 +35,7 @@ def conectar_db():
 
 conn = conectar_db()
 
-# 2. Funciones de datos cacheados
+# 3. Funciones cacheadas para leer datos
 @st.cache_data(ttl=60)
 def get_tables():
     return pd.read_sql("SELECT id, nombre FROM mesas ORDER BY id", conn)
@@ -42,7 +43,7 @@ def get_tables():
 @st.cache_data(ttl=60)
 def get_products():
     return pd.read_sql(
-        "SELECT id, nombre, precio_unitario "
+        "SELECT id, nombre, precio_unitario, categoria "
         "FROM productos ORDER BY categoria, nombre",
         conn
     )
@@ -60,7 +61,7 @@ def get_order_items(orden_id):
     """
     return pd.read_sql(sql, conn, params=(orden_id,))
 
-# 3. Lógica de órdenes
+# 4. Lógica de órdenes
 def get_or_create_order(mesa_id):
     df = pd.read_sql(
         "SELECT id FROM ordenes "
@@ -106,37 +107,52 @@ def generar_ticket_pdf(mesa, orden_id, items_df, total):
     pdf.cell(0, 6, "====== BAR XYZ ======", ln=True, align="C")
     pdf.cell(0, 6, f"Mesa: {mesa}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
     pdf.cell(0, 6, "-"*40, ln=True)
-
     for _, row in items_df.iterrows():
         line = f"{int(row['cantidad']):>2} x {row['producto']:<20} $ {row['subtotal']:>6.2f}"
         pdf.cell(0, 6, line, ln=True)
-
     pdf.cell(0, 6, "-"*40, ln=True)
     pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     buffer = pdf.output(dest="S").encode('latin1')
     return buffer
 
-# --- Interfaz de usuario ---
-mesas_df    = get_tables()
-mesa_sel    = st.selectbox("Elige mesa", mesas_df["nombre"])
-mesa_id     = mesas_df[mesas_df["nombre"] == mesa_sel]["id"].iloc[0]
-orden_id    = get_or_create_order(mesa_id)
-st.markdown(f"**Orden activa:** `{orden_id}`")
+# 5. Interfaz de usuario
 
+# 5.1 Mesas
+mesas_df = get_tables()
+if mesas_df.empty:
+    st.warning("No hay mesas definidas. Agrega mesas en la base de datos.")
+    st.stop()
+
+# Mapeo nombre → id
+mesa_map = dict(zip(mesas_df["nombre"], mesas_df["id"]))
+mesa_sel = st.selectbox("Elige mesa", list(mesa_map.keys()))
+mesa_id  = mesa_map[mesa_sel]
+
+st.markdown(f"**Orden activa para la mesa:** {mesa_sel} (id: {mesa_id})")
+
+# 5.2 Obtener o crear orden
+orden_id = get_or_create_order(mesa_id)
+
+# 5.3 Productos
 productos_df = get_products()
-prod_sel     = st.selectbox("Producto", productos_df["nombre"])
-prod_row     = productos_df[productos_df["nombre"] == prod_sel].iloc[0]
-cant         = st.number_input("Cantidad", min_value=1, step=1, value=1)
+prod_sel = st.selectbox("Producto", productos_df["nombre"])
+prod_row = productos_df[productos_df["nombre"] == prod_sel].iloc[0]
+cant     = st.number_input("Cantidad", min_value=1, step=1, value=1)
 
 if st.button("➕ Añadir al pedido"):
-    add_item(orden_id, int(prod_row["id"]), int(cant), float(prod_row["precio_unitario"]))
+    add_item(
+        orden_id,
+        int(prod_row["id"]),
+        int(cant),
+        float(prod_row["precio_unitario"])
+    )
     st.success(f"{cant} x {prod_sel} agregado.")
 
+# 5.4 Detalle de la orden
 st.subheader("Detalle de la orden")
 items_df = get_order_items(orden_id)
-
 if items_df.empty:
-    st.info("No hay productos añadidos aún.")
+    st.info("No hay productos agregados aún.")
 else:
     st.dataframe(items_df, use_container_width=True)
     total = items_df["subtotal"].sum()
