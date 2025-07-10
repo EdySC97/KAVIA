@@ -143,9 +143,10 @@ def finalize_order(orden_id):
         st.error(traceback.format_exc())
 
 def generar_ticket_pdf(mesa, personas, orden_id, items, total):
-    pdf = FPDF(format="P", unit="mm", margin=10)
+    pdf = FPDF(orientation='P', unit='mm', format=(80, 297))
+    pdf.set_margins(left=5, top=5, right=5)
     pdf.add_page()
-    pdf.set_font("Courier", size=11)
+    pdf.set_font("Courier", size=9)  # letra más pequeña para ticket
     pdf.cell(0, 6, "====== BAR XYZ ======", ln=True, align="C")
     pdf.cell(0, 6, f"Mesa: {mesa}   Personas: {personas}", ln=True)
     pdf.cell(0, 6, f"Orden: {str(orden_id)[:8]}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
@@ -155,6 +156,7 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
     pdf.cell(0, 6, "-"*40, ln=True)
     pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
+
 
 
 
