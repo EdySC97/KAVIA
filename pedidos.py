@@ -49,15 +49,19 @@ def get_products():
     )
 
 @st.cache_data(ttl=30)
+@st.cache_data(ttl=30)
 def get_order_items(orden_id):
     sql = """
-      SELECT p.nombre    AS producto,
-             oi.cantidad,
-             oi.precio_unitario,
-             oi.subtotal
-      FROM orden_items oi
-      JOIN productos p ON p.id = oi.producto_id
-      WHERE oi.orden_id = %s;
+    SELECT
+      p.nombre                 AS producto,
+      oi.cantidad,
+      oi.precio_unitario,
+      oi.cantidad * oi.precio_unitario
+        AS subtotal
+    FROM orden_items oi
+    JOIN productos p
+      ON p.id = oi.producto_id
+    WHERE oi.orden_id = %s;
     """
     return pd.read_sql(sql, conn, params=(orden_id,))
 
