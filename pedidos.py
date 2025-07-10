@@ -5,12 +5,12 @@ import pandas as pd
 from datetime import datetime
 from fpdf import FPDF
 
-# 1) Configuración de entorno y layout
+# 1) Forzar encoding y layout
 os.environ["PGCLIENTENCODING"] = "latin1"
 st.set_page_config(layout="wide")
 st.title("📋 Captura de Pedido")
 
-# 2) Leer credenciales de .streamlit/secrets.toml
+# 2) Cargar credenciales
 cfg      = st.secrets["postgres"]
 host     = cfg["host"]
 port     = cfg["port"]
@@ -18,7 +18,7 @@ database = cfg["database"]
 user     = cfg["user"]
 password = cfg["password"]
 
-# 3) Conexión compartida a la base de datos
+# 3) Conectar a Postgres
 @st.cache_resource
 def conectar_db():
     return psycopg2.connect(
@@ -43,11 +43,7 @@ def get_products():
 @st.cache_data(ttl=30)
 def get_open_orders():
     sql = """
-      SELECT 
-        o.id,
-        o.mesa_id,
-        o.personas,
-        m.nombre AS mesa
+      SELECT o.id, o.mesa_id, o.personas, m.nombre AS mesa
       FROM ordenes o
       JOIN mesas m ON m.id = o.mesa_id
       WHERE o.estado = 'abierto'
@@ -59,7 +55,7 @@ def get_open_orders():
 def get_order_items(orden_id):
     sql = """
       SELECT
-        p.nombre                    AS producto,
+        p.nombre            AS producto,
         oi.cantidad,
         oi.precio_unitario,
         oi.subtotal
@@ -99,7 +95,7 @@ def get_or_create_order(mesa_id, personas):
     return oid
 
 def add_item(orden_id, producto_id, cantidad, precio):
-    # NO insertamos 'subtotal' aquí, Postgres lo genera
+    # No insertamos subtotal, es GENERATED ALWAYS
     cur = conn.cursor()
     cur.execute("""
       INSERT INTO orden_items
@@ -113,7 +109,7 @@ def finalize_order(orden_id):
     cur = conn.cursor()
     cur.execute("""
       UPDATE ordenes
-        SET estado='pagado', cerrado_at=%s
+      SET estado='pagado', cerrado_at=%s
       WHERE id=%s;
     """, (now, orden_id))
     conn.commit()
@@ -127,13 +123,12 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
     pdf.cell(0,6, f"Orden: {orden_id}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
     pdf.cell(0,6, "-"*40, ln=True)
     for r in items.itertuples():
-        line = f"{r.cantidad:>2} x {r.producto:<20} $ {r.subtotal:>6.2f}"
-        pdf.cell(0,6, line, ln=True)
+        pdf.cell(0,6, f"{r.cantidad:>2} x {r.producto:<20} $ {r.subtotal:>6.2f}", ln=True)
     pdf.cell(0,6, "-"*40, ln=True)
     pdf.cell(0,6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
 
-# 6) Sidebar: mostrar todas las mesas abiertas
+# 6) Sidebar: carrito de mesas abiertas
 st.sidebar.header("🛒 Mesas Abiertas")
 open_orders = get_open_orders()
 if open_orders.empty:
@@ -148,34 +143,36 @@ else:
                 st.table(df_it[["producto","cantidad","subtotal"]])
                 st.write("Total: $", df_it["subtotal"].sum())
 
-# 7) Área principal: capturar pedido
+# 7) Área principal: tomar pedido
 mesas_df = get_tables()
 if mesas_df.empty:
     st.error("No hay mesas definidas.")
     st.stop()
 
 mesa_sel = st.selectbox("Elige mesa", mesas_df["nombre"])
-mesa_id  = mesas_df.loc[mesas_df["nombre"]==mesa_sel, "id"].iloc[0]
+mesa_id  = mesas_df.loc[mesas_df["nombre"] == mesa_sel, "id"].iloc[0]
 personas = st.number_input("Cantidad de personas", min_value=1, max_value=20, value=1)
 
 orden_id = get_or_create_order(mesa_id, personas)
 st.markdown(f"**Orden activa:** {orden_id}")
 
-# 7.1) Selección de categoría (Comida/Bebidas)
+# 7.1) Filtrar por categoría (Comida/Bebidas)
 productos_df = get_products()
 categorias  = productos_df["categoria"].unique().tolist()
 categoria   = st.selectbox("Categoría", categorias)
 filtro_df   = productos_df[productos_df["categoria"] == categoria]
 
 sel_prod = st.selectbox("Producto", filtro_df["nombre"])
-prod_row = filtro_df.loc[filtro_df["nombre"]==sel_prod].iloc[0]
+prod_row = filtro_df.loc[filtro_df["nombre"] == sel_prod].iloc[0]
 cant     = st.number_input("Cantidad", min_value=1, value=1, key="cant")
 
 if st.button("➕ Añadir al pedido"):
-    add_item(orden_id,
-             int(prod_row["id"]),
-             int(cant),
-             float(prod_row["precio_unitario"]))
+    add_item(
+        orden_id,
+        int(prod_row["id"]),
+        int(cant),
+        float(prod_row["precio_unitario"])
+    )
     st.success(f"{cant} x {sel_prod} agregado.")
 
 # 7.2) Mostrar detalle, total, finalizar e imprimir
@@ -185,8 +182,8 @@ if items.empty:
     st.info("No hay productos agregados aún.")
 else:
     st.dataframe(
-      items[["producto","cantidad","precio_unitario","subtotal"]],
-      use_container_width=True
+        items[["producto","cantidad","precio_unitario","subtotal"]],
+        use_container_width=True
     )
     total = items["subtotal"].sum()
     st.metric("Total a pagar", f"$ {total:.2f}")
