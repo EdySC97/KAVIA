@@ -87,6 +87,25 @@ def get_or_create_order(mesa_id, personas):
     oid = cur.fetchone()[0]
     conn.commit()
     return oid
+# Debug: qué valores vas a insertar
+st.write("DEBUG insert item:", {
+    "orden_id":   orden_id,
+    "producto_id":   prod_row["id"],
+    "cantidad":   cant,
+    "precio_unitario": prod_row["precio_unitario"]
+})
+
+# Debug: columnas de la tabla y si admiten NULLs
+schema = pd.read_sql(
+    """
+    SELECT column_name, is_nullable
+      FROM information_schema.columns
+     WHERE table_name = 'orden_items';
+    """,
+    conn
+)
+st.write("DEBUG esquema orden_items:", schema)
+
 
 def add_item(orden_id, producto_id, cantidad, precio):
     cur = conn.cursor()
