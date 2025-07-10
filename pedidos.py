@@ -155,9 +155,9 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
 
     # Encabezado
     
-    pdf.cell(0, 5, "====== BAR KAVIA ======", style="B", ln=True, align="C")
-    pdf.cell(0, 5, f"Mesa: {mesa}   Pers: {personas}",style="B", ln=True)
-    pdf.cell(0, 5, f"Orden: {str(orden_id)[:8]}", style="B",ln=True)
+    pdf.cell(0, 5, "====== BAR KAVIA ======", ln=True, align="C")
+    pdf.cell(0, 5, f"Mesa: {mesa}   Pers: {personas}", ln=True)
+    pdf.cell(0, 5, f"Orden: {str(orden_id)[:8]}",ln=True)
     pdf.cell(0, 5, f"Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
     pdf.cell(0, 5, "-" * 38, ln=True)
 
