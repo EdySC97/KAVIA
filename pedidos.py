@@ -6,20 +6,17 @@ import pandas as pd
 from datetime import datetime
 from fpdf import FPDF
 
-# Configuración de entorno y layout
+# 1) Configuración general
 os.environ["PGCLIENTENCODING"] = "latin1"
 st.set_page_config(layout="wide")
 st.title("📋 Captura de Pedido")
 
-# Leer credenciales
-cfg      = st.secrets["postgres"]
-host     = cfg["host"]
-port     = cfg["port"]
-database = cfg["database"]
-user     = cfg["user"]
-password = cfg["password"]
+# 2) Leer credenciales desde secrets.toml
+cfg = st.secrets["postgres"]
+host, port, database = cfg["host"], cfg["port"], cfg["database"]
+user, password = cfg["user"], cfg["password"]
 
-# Conexión a la base de datos
+# 3) Conexión compartida
 @st.cache_resource
 def conectar_db():
     return psycopg2.connect(
@@ -28,7 +25,7 @@ def conectar_db():
     )
 conn = conectar_db()
 
-# Consultas cacheadas
+# 4) Funciones cacheadas
 @st.cache_data(ttl=60)
 def get_tables():
     return pd.read_sql("SELECT id, nombre FROM mesas ORDER BY id", conn)
@@ -38,6 +35,7 @@ def get_products():
     return pd.read_sql("""
         SELECT id, nombre, precio_unitario, categoria 
         FROM productos 
+        WHERE precio_unitario IS NOT NULL 
         ORDER BY categoria, nombre
     """, conn)
 
@@ -65,7 +63,7 @@ def get_order_items(orden_id):
         ORDER BY p.nombre;
     """, conn, params=(orden_id,))
 
-# Lógica para obtener o crear orden
+# 5) Funciones de negocio
 def get_or_create_order(mesa_id, personas):
     try:
         df = pd.read_sql("""
@@ -74,7 +72,7 @@ def get_or_create_order(mesa_id, personas):
             WHERE mesa_id = %s AND estado = 'abierto';
         """, conn, params=(mesa_id,))
     except Exception as e:
-        st.error("Error en get_or_create_order:")
+        st.error("Error al obtener la orden:")
         st.error(traceback.format_exc())
         st.stop()
 
@@ -88,15 +86,19 @@ def get_or_create_order(mesa_id, personas):
 
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO ordenes(mesa_id, personas, estado) 
-            VALUES (%s, %s, 'abierto') 
-            RETURNING id;
+            INSERT INTO ordenes (mesa_id, personas, estado) 
+            VALUES (%s, %s, 'abierto') RETURNING id;
         """, (mesa_id, personas))
         oid = cur.fetchone()[0]
     conn.commit()
     return oid
 
 def add_item(orden_id, producto_id, cantidad, precio):
+    # Validación defensiva
+    if None in (orden_id, producto_id, cantidad, precio):
+        st.error("Error: uno de los valores del producto es inválido (None).")
+        st.stop()
+    
     with conn.cursor() as cur:
         cur.execute("""
             INSERT INTO orden_items (orden_id, producto_id, cantidad, precio_unitario)
@@ -128,7 +130,7 @@ def generar_ticket_pdf(mesa, personas, orden_id, items, total):
     pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
 
-# Sidebar
+# 6) Sidebar: mesas abiertas
 st.sidebar.header("🛒 Mesas Abiertas")
 open_orders = get_open_orders()
 if open_orders.empty:
@@ -143,7 +145,7 @@ else:
                 st.table(df_it[["producto", "cantidad", "subtotal"]])
                 st.write("Total: $", df_it["subtotal"].sum())
 
-# Formulario principal
+# 7) Captura de pedido
 mesas_df = get_tables()
 if mesas_df.empty:
     st.error("No hay mesas definidas.")
@@ -156,21 +158,32 @@ personas = st.number_input("Cantidad de personas", min_value=1, max_value=20, va
 orden_id = get_or_create_order(mesa_id, personas)
 st.markdown(f"**Orden activa:** {orden_id}")
 
-# Productos
+# 7.1) Selección de productos
 productos_df = get_products()
-categorias = productos_df["categoria"].unique().tolist()
+categorias = productos_df["categoria"].dropna().unique().tolist()
 categoria = st.selectbox("Categoría", categorias)
-filtro_df = productos_df[productos_df["categoria"] == categoria]
 
+filtro_df = productos_df[productos_df["categoria"] == categoria]
 sel_prod = st.selectbox("Producto", filtro_df["nombre"])
+
 prod_row = filtro_df[filtro_df["nombre"] == sel_prod].iloc[0]
 cant = st.number_input("Cantidad", min_value=1, value=1, key="cant")
 
+# 7.2) Añadir producto
 if st.button("➕ Añadir al pedido"):
-    add_item(orden_id, int(prod_row["id"]), int(cant), float(prod_row["precio_unitario"]))
-    st.success(f"{cant} x {sel_prod} agregado.")
+    try:
+        add_item(
+            int(orden_id),
+            int(prod_row["id"]),
+            int(cant),
+            float(prod_row["precio_unitario"])
+        )
+        st.success(f"{cant} x {sel_prod} agregado.")
+    except Exception as e:
+        st.error("Ocurrió un error al agregar el producto.")
+        st.error(traceback.format_exc())
 
-# Detalles y botones
+# 8) Detalle y acciones finales
 st.subheader("Detalle de la orden")
 items = get_order_items(orden_id)
 if items.empty:
