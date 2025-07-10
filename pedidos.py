@@ -143,18 +143,20 @@ def finalize_order(orden_id):
         st.error(traceback.format_exc())
 
 def generar_ticket_pdf(mesa, personas, orden_id, items, total):
-    pdf = FPDF(format="P", unit="mm", margin=5)
+    pdf = FPDF(orientation='P', unit='mm', format=(80, 150))  # Tamaño ticket: 80x150 mm
+    pdf.set_margins(5, 5, 5)  # Márgenes: 5 mm izquierdo, arriba y derecho
     pdf.add_page()
     pdf.set_font("Courier", size=11)
-    pdf.cell(0, 6, "====== BAR KAVIA ======", ln=True, align="C")
+    pdf.cell(0, 6, "====== BAR XYZ ======", ln=True, align="C")
     pdf.cell(0, 6, f"Mesa: {mesa}   Personas: {personas}", ln=True)
-    pdf.cell(0, 6, f"Orden: {srt(orden_id)[:8]}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
+    pdf.cell(0, 6, f"Orden: {orden_id}   Fecha: {datetime.now():%Y-%m-%d %H:%M}", ln=True)
     pdf.cell(0, 6, "-"*40, ln=True)
     for r in items.itertuples():
         pdf.cell(0, 6, f"{r.cantidad:>2} x {r.producto:<20} $ {r.subtotal:>6.2f}", ln=True)
     pdf.cell(0, 6, "-"*40, ln=True)
     pdf.cell(0, 6, f"TOTAL: $ {total:.2f}", ln=True, align="R")
     return pdf.output(dest="S").encode("latin1")
+
 
 # 5) Sidebar de mesas abiertas
 st.sidebar.header("🛒 Mesas Abiertas")
